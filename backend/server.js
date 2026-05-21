@@ -33,10 +33,18 @@ const JWT_EXPIRY = process.env.JWT_EXPIRES_IN || "7d";
    MIDDLEWARE
 ───────────────────────────────────────────────────────────────── */
 app.use(cors({
-  origin: [
-    "https://cloudide.site",
-    "https://www.cloudide.site"
-  ],
+  origin: function(origin, callback) {
+    const allowed = [
+      "https://cloudide.site",
+      "https://www.cloudide.site",
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      CLIENT_URL,
+    ];
+    // allow requests with no origin (e.g. curl, Postman, same-origin SSE)
+    if (!origin || allowed.includes(origin)) return callback(null, true);
+    callback(new Error("Not allowed by CORS"));
+  },
   credentials: true
 }));
 app.use(bodyParser.json({ limit: "2mb" }));
@@ -738,7 +746,8 @@ app.get("/run-interactive/output/:sessionId", requireAuth, (req, res) => {
   res.setHeader("Content-Type",  "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection",    "keep-alive");
-  res.setHeader("Access-Control-Allow-Origin", CLIENT_URL);
+  res.setHeader("Access-Control-Allow-Origin", req.headers.origin || CLIENT_URL);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
   res.flushHeaders();
 
   let idx = 0;

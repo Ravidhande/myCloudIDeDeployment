@@ -1,0 +1,125 @@
+/* ─────────────────────────────────────────────────────────────────
+   GLOBAL THEME SYSTEM — CSS Variables
+───────────────────────────────────────────────────────────────── */
+
+:root {
+  --bg-primary: #1e1e1e;
+  --bg-secondary: #0a0a0a;
+  --bg-tertiary: #252525;
+  --fg-primary: #d4d4d4;
+  --fg-secondary: #888888;
+  --accent-1: #3b82f6;
+  --accent-2: #ec4899;
+  --accent-3: #10b981;
+  --border-color: #333333;
+  --highlight-bg: #1a1a1a;
+}
+
+body {
+  background-color: var(--bg-secondary);
+  color: var(--fg-primary);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Apply theme globally to all elements */
+#root {
+  background: linear-gradient(135deg, var(--bg-primary), var(--bg-secondary));
+  color: var(--fg-primary);
+}
+
+/* Override hardcoded colors in the editor */
+div[style*="background:#0a0a0a"],
+div[style*="background: #0a0a0a"] {
+  background-color: var(--bg-secondary) !important;
+}
+
+div[style*="background:#0f0f0f"],
+div[style*="background: #0f0f0f"] {
+  background-color: var(--bg-primary) !important;
+}
+
+div[style*="background:#181818"],
+div[style*="background: #181818"] {
+  background-color: var(--border-color) !important;
+}
+
+div[style*="color:#e5e5e5"],
+div[style*="color: #e5e5e5"],
+div[style*="color:#d4d4d4"],
+div[style*="color: #d4d4d4"] {
+  color: var(--fg-primary) !important;
+}
+
+div[style*="color:#666"],
+div[style*="color: #666"] {
+  color: var(--fg-secondary) !important;
+}
+
+/* Buttons and interactive elements */
+button, input[type="button"], input[type="submit"] {
+  background-color: var(--bg-tertiary);
+  color: var(--fg-primary);
+  border: 1px solid var(--border-color);
+  transition: all 0.2s ease;
+}
+
+button:hover {
+  background-color: var(--highlight-bg);
+  border-color: var(--accent-1);
+}
+
+/* Inputs */
+input[type="text"], 
+input[type="email"], 
+input[type="password"], 
+textarea, 
+select {
+  background-color: var(--bg-tertiary);
+  color: var(--fg-primary);
+  border: 1px solid var(--border-color);
+  padding: 8px 12px;
+  border-radius: 4px;
+}
+
+input[type="text"]:focus, 
+input[type="email"]:focus, 
+input[type="password"]:focus, 
+textarea:focus, 
+select:focus {
+  outline: none;
+  border-color: var(--accent-1);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-secondary);
+}
+
+/* Monaco Editor container */
+.monaco-editor {
+  background-color: var(--bg-primary) !important;
+}
+
+.monaco-editor .monaco-editor-background {
+  background-color: var(--bg-primary) !important;
+}
+
+/* Ensure theme transitions are smooth */
+* {
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+}
