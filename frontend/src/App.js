@@ -8,7 +8,7 @@ import {
   FaPlay, FaStop, FaGithub, FaChevronDown, FaChevronRight,
   FaRobot, FaCog, FaSave, FaSignOutAlt, FaUser, FaLock, FaEye, FaEyeSlash,
   FaCode, FaPlus, FaTimes, FaTerminal, FaExpandAlt, FaCompressAlt,
-  FaRegCopy, FaDownload, FaFolderOpen, FaFile,
+  FaRegCopy, FaDownload, FaFolderOpen, FaFolder, FaFile,
   FaTrash, FaEdit, FaUpload, FaBolt, FaCoffee, FaEnvelope,
   FaCheckCircle, FaArrowLeft, FaExclamationTriangle, FaUsers, FaCopy,
   FaCamera, FaPalette, FaKeyboard, FaBell, FaShieldAlt, FaInfoCircle,
@@ -2702,6 +2702,50 @@ function IDE() {
   const [renameVal,    setRenameVal]    = useState("");
   const [ctxMenu,      setCtxMenu]      = useState(null);
 
+  // Folder state
+  const [folders, setFolders] = useState(() => {
+    try {
+      const saved = localStorage.getItem("cide_folders");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
+  const [collapsedFolders, setCollapsedFolders] = useState({});
+  const [newFileInFolder,  setNewFileInFolder]  = useState(null); // folderId for new file target
+  const [newFolderModal,   setNewFolderModal]   = useState(false);
+  const [newFolderName,    setNewFolderName]     = useState("");
+  const [folderCtxMenu,    setFolderCtxMenu]    = useState(null);
+  const [renameFolderId,   setRenameFolderId]   = useState(null);
+  const [renameFolderVal,  setRenameFolderVal]  = useState("");
+
+  useEffect(() => { localStorage.setItem("cide_folders", JSON.stringify(folders)); }, [folders]);
+
+  const createFolder = () => {
+    const name = newFolderName.trim() || "New Folder";
+    const id = uid();
+    setFolders(fs => [...fs, { id, name }]);
+    setCollapsedFolders(c => ({ ...c, [id]: false }));
+    setNewFolderModal(false); setNewFolderName("");
+    toast.show(`Created folder "${name}"`, "success", 1500);
+  };
+  const deleteFolder = (folderId) => {
+    setFolders(fs => fs.filter(f => f.id !== folderId));
+    // Move files in that folder back to root
+    setFiles(fs => fs.map(f => f.folderId === folderId ? { ...f, folderId: null } : f));
+    setFolderCtxMenu(null);
+    toast.show("Folder deleted", "info", 1500);
+  };
+  const startRenameFolder = (folderId) => {
+    const f = folders.find(x => x.id === folderId);
+    setRenameFolderId(folderId); setRenameFolderVal(f?.name || "");
+    setFolderCtxMenu(null);
+  };
+  const finishRenameFolder = (folderId) => {
+    if (renameFolderVal.trim()) setFolders(fs => fs.map(f => f.id === folderId ? { ...f, name: renameFolderVal.trim() } : f));
+    setRenameFolderId(null);
+  };
+  const toggleFolder = (folderId) => setCollapsedFolders(c => ({ ...c, [folderId]: !c[folderId] }));
+
   const [profileModal,  setProfileModal]  = useState(false);
   const [settingsModal, setSettingsModal] = useState(false);
 
@@ -2718,9 +2762,10 @@ function IDE() {
     return () => clearInterval(id);
   }, []);
 
-  const termBodyRef  = useRef(null);
-  const termInputRef = useRef(null);
-  const fileInputRef = useRef(null);
+  const termBodyRef    = useRef(null);
+  const termInputRef   = useRef(null);
+  const fileInputRef   = useRef(null);
+  const folderInputRef = useRef(null);
   const clock = useTick();
 
   useEffect(() => { if (termBodyRef.current) termBodyRef.current.scrollTop = termBodyRef.current.scrollHeight; }, [termLines, inputReady]);
@@ -2755,8 +2800,8 @@ function IDE() {
   const finishRename = id => { if(renameVal.trim()){const ext=renameVal.trim().split(".").pop()?.toLowerCase(),lang=EXT_TO_LANG[ext]||files.find(f=>f.id===id)?.lang||"python";setFiles(fs=>fs.map(f=>f.id===id?{...f,name:renameVal.trim(),lang}:f));} setRenameId(null); };
   const createFile  = () => {
     const ext=LANGS[newFileLang]?.ext||"py", raw=newFileName.trim()||`untitled.${ext}`, name=raw.includes(".")?raw:`${raw}.${ext}`, id=uid();
-    setFiles(fs=>[...fs,{id,name,lang:newFileLang,code:DEFAULT_CODE[newFileLang]||"",saved:true,codeByLang:{ [newFileLang]: DEFAULT_CODE[newFileLang]||"" }}]);
-    setActiveId(id); setNewFileModal(false); setNewFileName(""); setNewFileLang("python");
+    setFiles(fs=>[...fs,{id,name,lang:newFileLang,code:DEFAULT_CODE[newFileLang]||"",saved:true,folderId:newFileInFolder??null,codeByLang:{ [newFileLang]: DEFAULT_CODE[newFileLang]||"" }}]);
+    setActiveId(id); setNewFileModal(false); setNewFileName(""); setNewFileLang("python"); setNewFileInFolder(null);
     toast.show(`Created ${name}`, "success", 1500);
   };
   const openFromDisk = e => {
@@ -2765,6 +2810,70 @@ function IDE() {
     reader.onload=ev=>{const ext=file.name.split(".").pop()?.toLowerCase(),lang=EXT_TO_LANG[ext]||"python",id=uid();setFiles(fs=>[...fs,{id,name:file.name,lang,code:ev.target.result,saved:true,codeByLang:{ [lang]: ev.target.result }}]);setActiveId(id);toast.show(`Opened ${file.name}`, "success", 1500);};
     reader.readAsText(file); e.target.value="";
   };
+  const openFolderFromDisk = e => {
+    const allFiles = Array.from(e.target.files);
+    if (!allFiles.length) return;
+
+    // Group files by their top-level folder (first path segment)
+    const folderMap = {}; // folderName -> folderId
+    const newFolderEntries = [];
+    const newFileEntries = [];
+
+    const readFile = (file) => new Promise(resolve => {
+      const reader = new FileReader();
+      // webkitRelativePath = "FolderName/sub/file.ext"
+      const relPath = file.webkitRelativePath || file.name;
+      const parts = relPath.split("/");
+      // parts[0] = root folder, parts[last] = filename
+      // We create a folder entry per unique top-level dir, and sub-paths become the file name
+      const topFolder = parts[0];
+      const fileName  = parts[parts.length - 1];
+      const ext = fileName.split(".").pop()?.toLowerCase();
+      const lang = EXT_TO_LANG[ext] || "python";
+
+      // Skip binary / non-text files by extension
+      const textExts = new Set(["py","js","ts","jsx","tsx","java","c","cpp","cc","h","hpp","rs","go","rb","php","html","css","json","md","txt","yaml","yml","toml","sh","bash","sql","xml","csv","env","gitignore","lock"]);
+      if (!textExts.has(ext)) { resolve(null); return; }
+
+      reader.onload = ev => {
+        if (!folderMap[topFolder]) {
+          const fid = uid();
+          folderMap[topFolder] = fid;
+          newFolderEntries.push({ id: fid, name: topFolder });
+        }
+        const folderId = folderMap[topFolder];
+        const fileId   = uid();
+        newFileEntries.push({
+          id: fileId, name: fileName, lang,
+          code: ev.target.result, saved: true,
+          folderId,
+          codeByLang: { [lang]: ev.target.result },
+        });
+        resolve(fileId);
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsText(file);
+    });
+
+    Promise.all(allFiles.map(readFile)).then(ids => {
+      const validIds = ids.filter(Boolean);
+      if (!validIds.length) { toast.show("No readable text files found", "warning"); return; }
+      setFolders(fs => [...fs, ...newFolderEntries]);
+      setFiles(fs => [...fs, ...newFileEntries]);
+      // Open first file
+      setActiveId(newFileEntries[0]?.id);
+      // Expand uploaded folders
+      setCollapsedFolders(c => {
+        const next = { ...c };
+        newFolderEntries.forEach(f => { next[f.id] = false; });
+        return next;
+      });
+      toast.show(`Uploaded ${newFolderEntries.length} folder(s), ${validIds.length} file(s)`, "success", 2500);
+    });
+
+    e.target.value = "";
+  };
+
   const downloadFile = () => { const b=new Blob([activeFile.code],{type:"text/plain"}),a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=activeFile.name;a.click();URL.revokeObjectURL(a.href); toast.show(`Downloaded ${activeFile.name}`, "success", 1500); };
   const copyCode     = () => { navigator.clipboard.writeText(activeFile.code).then(() => toast.show("Code copied to clipboard", "success", 1500)).catch(()=>{}); };
   const changeLang = useCallback(lang => {
@@ -2999,7 +3108,7 @@ function IDE() {
   const avatarSrc = user?.avatar ? `${API_URL}/auth/avatar?token=${localStorage.getItem("cide_token")}` : null;
 
   return (
-    <div style={S.root} onClick={() => { setUserMenu(false); setCtxMenu(null); }}>
+    <div style={S.root} onClick={() => { setUserMenu(false); setCtxMenu(null); setFolderCtxMenu(null); }}>
 
       <div style={S.titlebar}>
         <div style={S.tbLeft}>
@@ -3106,15 +3215,78 @@ function IDE() {
               <>
                 <div style={S.sbHead}><span style={S.sbTitle}>Explorer</span>
                   <div style={{display:"flex",gap:4}}>
-                    <button style={S.sbBtn} onClick={() => setNewFileModal(true)} title="New file"><FaPlus size={10}/></button>
-                    <button style={S.sbBtn} onClick={() => fileInputRef.current?.click()} title="Open file"><FaUpload size={10}/></button>
+                    <button style={S.sbBtn} onClick={() => { setNewFileInFolder(null); setNewFileModal(true); }} title="New file"><FaPlus size={10}/></button>
+                    <button style={S.sbBtn} onClick={() => setNewFolderModal(true)} title="New folder"><FaFolder size={10}/></button>
+                    <button style={S.sbBtn} onClick={() => fileInputRef.current?.click()} title="Upload file"><FaFile size={10}/></button>
+                    <button style={S.sbBtn} onClick={() => folderInputRef.current?.click()} title="Upload folder from computer"><FaUpload size={10}/></button>
                   </div>
                 </div>
                 <input ref={fileInputRef} type="file" style={{display:"none"}} onChange={openFromDisk} accept=".py,.js,.ts,.java,.c,.cpp,.cc,.rs"/>
-                <div style={{flex:1,overflowY:"auto",padding:"4px 0"}}>
+                <input ref={folderInputRef} type="file" style={{display:"none"}} onChange={openFolderFromDisk} webkitdirectory="" mozdirectory="" directory="" multiple/>
+                <div style={{flex:1,overflowY:"auto",padding:"4px 0"}} onClick={()=>{setFolderCtxMenu(null);setCtxMenu(null);}}>
                   <div style={S.treeSection}><FaFolderOpen size={9} color="#555"/><span>WORKSPACE</span></div>
-                  {files.map(f => (
-                    <div key={f.id} onContextMenu={e=>{e.preventDefault();setCtxMenu({id:f.id,x:e.clientX,y:e.clientY});}}>
+
+                  {/* ── Folders ── */}
+                  {folders.map(folder => {
+                    const isCollapsed = collapsedFolders[folder.id];
+                    const folderFiles = files.filter(f => f.folderId === folder.id);
+                    return (
+                      <div key={folder.id}>
+                        {/* Folder row */}
+                        <div
+                          onContextMenu={e=>{e.preventDefault();e.stopPropagation();setFolderCtxMenu({id:folder.id,x:e.clientX,y:e.clientY});setCtxMenu(null);}}
+                          onClick={e=>{e.stopPropagation();toggleFolder(folder.id);}}
+                          style={{...S.treeRow,paddingLeft:10,gap:4,userSelect:"none"}}
+                        >
+                          {isCollapsed
+                            ? <FaChevronRight size={8} color="#3a3a3a"/>
+                            : <FaChevronDown  size={8} color="#3a3a3a"/>}
+                          {isCollapsed
+                            ? <FaFolder     size={12} color="#8a7a40" style={{flexShrink:0}}/>
+                            : <FaFolderOpen size={12} color="#c9a96e" style={{flexShrink:0}}/>}
+                          {renameFolderId === folder.id ? (
+                            <input autoFocus value={renameFolderVal}
+                              onChange={e=>setRenameFolderVal(e.target.value)}
+                              onBlur={()=>finishRenameFolder(folder.id)}
+                              onKeyDown={e=>{e.stopPropagation();if(e.key==="Enter")finishRenameFolder(folder.id);if(e.key==="Escape")setRenameFolderId(null);}}
+                              onClick={e=>e.stopPropagation()}
+                              style={{flex:1,background:"#1a1a1a",border:"1px solid #333",borderRadius:3,color:"#d4d4d4",fontSize:11,padding:"1px 5px",outline:"none",fontFamily:"'JetBrains Mono',monospace"}}/>
+                          ) : (
+                            <span style={{flex:1,fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"#aaa",fontWeight:500}}>{folder.name}</span>
+                          )}
+                          <button
+                            onClick={e=>{e.stopPropagation();setNewFileInFolder(folder.id);setNewFileModal(true);}}
+                            title="New file in folder"
+                            style={{background:"none",border:"none",color:"#3a3a3a",cursor:"pointer",padding:"2px 3px",display:"flex",alignItems:"center",borderRadius:3,opacity:0,transition:"opacity 0.15s"}}
+                            onMouseEnter={e=>e.currentTarget.style.opacity="1"}
+                            onMouseLeave={e=>e.currentTarget.style.opacity="0"}
+                          ><FaPlus size={8}/></button>
+                        </div>
+                        {/* Files inside folder */}
+                        {!isCollapsed && folderFiles.map(f => (
+                          <div key={f.id} onContextMenu={e=>{e.preventDefault();e.stopPropagation();setCtxMenu({id:f.id,x:e.clientX,y:e.clientY});setFolderCtxMenu(null);}}>
+                            {renameId===f.id ? (
+                              <div style={{...S.treeRow,paddingLeft:36}}>
+                                <input autoFocus value={renameVal} onChange={e=>setRenameVal(e.target.value)}
+                                  onBlur={()=>finishRename(f.id)} onKeyDown={e=>{if(e.key==="Enter")finishRename(f.id);if(e.key==="Escape")setRenameId(null);}}
+                                  style={{flex:1,background:"#1a1a1a",border:"1px solid #333",borderRadius:3,color:"#d4d4d4",fontSize:11,padding:"1px 5px",outline:"none",fontFamily:"'JetBrains Mono',monospace"}}/>
+                              </div>
+                            ) : (
+                              <div onClick={()=>setActiveId(f.id)} style={{...S.treeRow,...(f.id===activeId?S.treeRowOn:{}),paddingLeft:36}}>
+                                <FileIcon name={f.name} lang={f.lang} size={12}/>
+                                <span style={{flex:1,fontSize:12,marginLeft:6,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.name}</span>
+                                {!f.saved&&<span style={{width:5,height:5,borderRadius:"50%",background:"#888",flexShrink:0}}/>}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })}
+
+                  {/* ── Root-level files (no folder) ── */}
+                  {files.filter(f => !f.folderId).map(f => (
+                    <div key={f.id} onContextMenu={e=>{e.preventDefault();e.stopPropagation();setCtxMenu({id:f.id,x:e.clientX,y:e.clientY});setFolderCtxMenu(null);}}>
                       {renameId===f.id ? (
                         <div style={{...S.treeRow,paddingLeft:20}}>
                           <input autoFocus value={renameVal} onChange={e=>setRenameVal(e.target.value)}
@@ -3132,8 +3304,9 @@ function IDE() {
                   ))}
                 </div>
                 <div style={{padding:"8px 10px",borderTop:"1px solid #141414",display:"flex",gap:6}}>
-                  <button onClick={() => setNewFileModal(true)} style={S.sbAction}><FaPlus size={9}/><span>New</span></button>
-                  <button onClick={() => fileInputRef.current?.click()} style={S.sbAction}><FaUpload size={9}/><span>Open</span></button>
+                  <button onClick={() => { setNewFileInFolder(null); setNewFileModal(true); }} style={S.sbAction}><FaPlus size={9}/><span>New File</span></button>
+                  <button onClick={() => setNewFolderModal(true)} style={S.sbAction}><FaFolder size={9}/><span>New Folder</span></button>
+                  <button onClick={() => folderInputRef.current?.click()} style={S.sbAction} title="Upload a folder from your computer"><FaUpload size={9}/><span>Upload</span></button>
                 </div>
               </>
             )}
@@ -3355,15 +3528,49 @@ function IDE() {
       {profileModal && <ProfileModal onClose={() => setProfileModal(false)}/>}
       {settingsModal && <SettingsModal onClose={() => setSettingsModal(false)} settings={settings} setSettings={setSettings}/>}
 
+      {newFolderModal && (
+        <div style={S.overlay} onMouseDown={e => { if (e.target === e.currentTarget) { setNewFolderModal(false); setNewFolderName(""); } }}>
+          <div style={S.modal} onClick={e=>e.stopPropagation()}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <div style={{width:28,height:28,borderRadius:7,background:"linear-gradient(135deg, #c9a96e, #a87a3a)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                  <FaFolder size={12} color="#fff"/>
+                </div>
+                <span style={{fontSize:14,fontWeight:600,color:"#d4d4d4"}}>New Folder</span>
+              </div>
+              <button onClick={()=>{setNewFolderModal(false);setNewFolderName("");}} style={{background:"#1a1a1a",border:"1px solid #2a2a2a",borderRadius:6,cursor:"pointer",color:"#888",display:"flex",padding:"7px"}}><FaTimes size={11}/></button>
+            </div>
+            <label style={{display:"block",fontSize:11,color:"#444",marginBottom:6}}>Folder Name</label>
+            <input autoFocus value={newFolderName} onChange={e=>setNewFolderName(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&createFolder()}
+              placeholder="my-folder"
+              style={{width:"100%",background:"#080808",border:"1px solid #1e1e1e",borderRadius:7,padding:"0 12px",height:40,color:"#d4d4d4",fontSize:13,fontFamily:"'JetBrains Mono',monospace",outline:"none",marginBottom:20}}/>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+              <button onClick={()=>{setNewFolderModal(false);setNewFolderName("");}} style={{background:"transparent",border:"1px solid #1e1e1e",borderRadius:6,padding:"8px 16px",fontSize:12,color:"#555",cursor:"pointer",fontFamily:"'Geist',sans-serif"}}>Cancel</button>
+              <button onClick={createFolder} style={{background:"linear-gradient(135deg, #c9a96e, #a87a3a)",border:"none",borderRadius:6,padding:"8px 18px",fontSize:12,fontWeight:600,color:"#fff",cursor:"pointer",display:"flex",alignItems:"center",gap:6,fontFamily:"'Geist',sans-serif",boxShadow:"0 4px 12px rgba(201,169,110,0.3)"}}><FaFolder size={10}/> Create</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {folderCtxMenu && (
+        <div style={{...S.ctxMenu,top:folderCtxMenu.y,left:folderCtxMenu.x}} onClick={e=>e.stopPropagation()}>
+          <button style={S.ctxItem} onClick={()=>startRenameFolder(folderCtxMenu.id)}><FaEdit size={10} color="#555"/><span>Rename</span></button>
+          <button style={S.ctxItem} onClick={()=>{setNewFileInFolder(folderCtxMenu.id);setFolderCtxMenu(null);setNewFileModal(true);}}><FaPlus size={10} color="#555"/><span>New File Here</span></button>
+          <div style={{height:1,background:"#1a1a1a",margin:"2px 0"}}/>
+          <button style={{...S.ctxItem,color:"#f87171"}} onClick={()=>deleteFolder(folderCtxMenu.id)}><FaTrash size={10} color="#f87171"/><span>Delete</span></button>
+        </div>
+      )}
+
       {newFileModal && (
-        <div style={S.overlay} onMouseDown={e => { if (e.target === e.currentTarget) setNewFileModal(false); }}>
+        <div style={S.overlay} onMouseDown={e => { if (e.target === e.currentTarget) { setNewFileModal(false); setNewFileInFolder(null); } }}>
           <div style={S.modal} onClick={e=>e.stopPropagation()}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
               <div style={{display:"flex", alignItems:"center", gap:10}}>
                 <div style={{ width:28, height:28, borderRadius:7, background:"linear-gradient(135deg, #22c55e, #16a34a)", display:"flex", alignItems:"center", justifyContent:"center" }}>
                   <FaPlus size={11} color="#fff"/>
                 </div>
-                <span style={{fontSize:14,fontWeight:600,color:"#d4d4d4"}}>New File</span>
+                <span style={{fontSize:14,fontWeight:600,color:"#d4d4d4"}}>New File{newFileInFolder ? ` in "${folders.find(f=>f.id===newFileInFolder)?.name||""}"` : ""}</span>
               </div>
               <button onClick={() => setNewFileModal(false)} style={{background:"#1a1a1a", border:"1px solid #2a2a2a", borderRadius:6, cursor:"pointer", color:"#888", display:"flex", padding:"7px"}}><FaTimes size={11}/></button>
             </div>
@@ -3379,7 +3586,7 @@ function IDE() {
                 </button>);})}
             </div>
             <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
-              <button onClick={()=>setNewFileModal(false)} style={{background:"transparent",border:"1px solid #1e1e1e",borderRadius:6,padding:"8px 16px",fontSize:12,color:"#555",cursor:"pointer",fontFamily:"'Geist',sans-serif"}}>Cancel</button>
+              <button onClick={()=>{setNewFileModal(false);setNewFileInFolder(null);}} style={{background:"transparent",border:"1px solid #1e1e1e",borderRadius:6,padding:"8px 16px",fontSize:12,color:"#555",cursor:"pointer",fontFamily:"'Geist',sans-serif"}}>Cancel</button>
               <button onClick={createFile} style={{background:"linear-gradient(135deg, #22c55e, #16a34a)",border:"none",borderRadius:6,padding:"8px 18px",fontSize:12,fontWeight:600,color:"#fff",cursor:"pointer",display:"flex",alignItems:"center",gap:6,fontFamily:"'Geist',sans-serif",boxShadow:"0 4px 12px rgba(34,197,94,0.3)"}}><FaPlus size={10}/> Create</button>
             </div>
           </div>
